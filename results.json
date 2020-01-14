@@ -1,0 +1,7 @@
+{
+    "metadata": {
+        "ticker": "VTSAX",
+        "name": "Vanguard Total Stock Market Fund"
+    },
+    "quotes": "{\"2019\":{\"close\":20},\"2020\":{\"close\":30},\"2021\":{\"close\":40}}"
+}
