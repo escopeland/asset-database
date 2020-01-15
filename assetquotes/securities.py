@@ -30,6 +30,7 @@ TIINGO_API_KEY = 'TIINGO_API_KEY'
 DATA_PATH = '.\\data\\pkl'
 NAME_DB = '_name_db'
 
+
 class Securities:
     def __init__(self, key=None):
         self._api_key = os.getenv('TIINGO_API_KEY') if key is None else key
@@ -41,16 +42,6 @@ class Securities:
 
         # self._init_quote_db()
         # self._update_quote_db()
-
-    # Metadata attributes:
-    # def ticker(self, ticker):
-    #     return ticker in self._quote_db.index
-
-    # def listed(self, ticker):
-    #     return self._quote_db['listed'][ticker]
-
-    # def quoted(self, ticker):
-    #     return self._quote_db['quoted'][ticker]
 
     def ticker(self, ticker):
         return self._get_metadata(ticker, 'ticker')
@@ -85,29 +76,6 @@ class Securities:
                 self.__class__, f"({ticker}): Ticker does not exist in database.",
             )
             return False
-
-    # def asset_class(self, ticker):
-    #     return self._quote_db['assetClass'][ticker]
-
-    # def inception(self, ticker):
-    #     return self._quote_db['inception'][ticker].date()
-
-    # def delisting(self, ticker):
-    #     return self._quote_db['delisting'][ticker].date()
-
-    # Quote attributes:
-    # def quote(self, ticker, date=None):
-    #     if date is None:
-    #         date = dt.date.today() - dt.timedelta(days=1)
-    #     return self._quote_db[ticker]['close'][date]
-
-    # def split_factor(self, ticker, date=None):
-    #     if date is None:
-    #         date = dt.date.today() - dt.timedelta(days=1)
-    #     return self._quote_db[ticker]['splitFactor'][date]   # def _get_quote_db(self, ticker, tag=None):
-    #     if tag is None:
-    #         tag = 'ticker'
-    #     return self._quote_db[ticker][tag]
 
     # Methods
     def add(self, ticker):
@@ -153,39 +121,40 @@ class Securities:
         return quote_db
 
     def _quote_db_update(self, ticker):
-        for ticker in self._quote_db:
-            # if ticker hasn't yet been updated today
-            #     update its last update
-            #
-            #     if ticker is listed in REST client database
-            #         update the ticker's endDate
-            #         
-            #         if ticker's endDate > its last update date
-            #             update the ticker's quotes
-            #
-            # yesterday = (dt.date.today() - dt.timedelta(1)).strftime("%Y-%m-%d")
+        pass
+        # for ticker in self._quote_db:
+        # if ticker hasn't yet been updated today
+        #     update its last update
+        #
+        #     if ticker is listed in REST client database
+        #         update the ticker's endDate
+        #
+        #         if ticker's endDate > its last update date
+        #             update the ticker's quotes
+        #
+        # yesterday = (dt.date.today() - dt.timedelta(1)).strftime("%Y-%m-%d")
 
-            d = dict()
-            d = self._quote_db['ticker']['metadata'] # d IS the metadata dictionary, not a oopy
-            q = pd.DataFrame()
-            q = self._quote_db['ticker']['quotes']   # q IS the quotes dataframe, not a oopy
+        # d = dict()
+        # d = self._quote_db['ticker']['metadata'] # d IS the metadata dictionary, not a oopy
+        # q = pd.DataFrame()
+        # q = self._quote_db['ticker']['quotes']   # q IS the quotes dataframe, not a oopy
 
-            last_update = d['lastUpdate']
-            today = dt.date.today().strftime("%Y-%m-%d")
+        # last_update = d['lastUpdate']
+        # today = dt.date.today().strftime("%Y-%m-%d")
 
-            if last_update < today:
-                if ticker in self._name_db:
-                    if end_date := self._client.get_ticker_metadata(ticker)['endDate'] is not None:
-                        if today < d['endDate']:
-                            q = pd.concat(q, self._client.get_dataframe(
-                                ticker, 
-                                startDate=d['endDate'], 
-                                endDate=end_date, 
-                                frequency='daily',
-                                )
-                            )
-                            d['endDate'] = end_date
-                d['lastUpdate'] = today
+        # if last_update < today:
+        #     if ticker in self._name_db:
+        #         if end_date := self._client.get_ticker_metadata(ticker)['endDate'] is not None:
+        #             if today < d['endDate']:
+        #                 q = pd.concat(q, self._client.get_dataframe(
+        #                     ticker,
+        #                     startDate=d['endDate'],
+        #                     endDate=end_date,
+        #                     frequency='daily',
+        #                     )
+        #                 )
+        #                 d['endDate'] = end_date
+        #     d['lastUpdate'] = today
 
     def _client_exists(self, ticker):
         return ticker in self._client.list_tickers()
@@ -193,11 +162,19 @@ class Securities:
     def _client_get(self, ticker):
         get_db = {}
         metadata = self._client.get_ticker_metadata(ticker)
-        quotes = self._client.get_dataframe(ticker, startDate=metadata['startDate'], endDate=metadata['endDate'], frequency='daily')
-        get_db.update({'metadata': metadata, 'quotes': quotes,})
+        quotes = self._client.get_dataframe(
+            ticker,
+            startDate=metadata['startDate'],
+            endDate=metadata['endDate'],
+            frequency='daily',
+        )
+        get_db.update(
+            {'metadata': metadata, 'quotes': quotes,}
+        )
         return get_db
 
         # File I/O utilities:
+
     def _db_read(self, filename):
         with open(os.path.join(self._datapath, filename), 'rb') as f:
             try:
@@ -205,56 +182,17 @@ class Securities:
             except:
                 print(self.__class__, f': Bad database read ({f.name})')
                 return {}
+
     def _db_write(self, filename, db):
         with open(os.path.join(self._datapath, filename), 'wb') as f:
             try:
                 pk.dump(db, f)
             except:
                 print(self.__class__, f': Bad database write ({f.name})')
+
     def update_fix(self):
         yesterday = (dt.date.today() - dt.timedelta(1)).strftime("%Y-%m-%d")
         for ticker in self._quote_db:
             d = {}
             d = self._quote_db[ticker]
             d['metadata'].update({'lastUpdate': yesterday})
-Portfolio = Securities()
-ticker = 'DJP'
-print(ticker in Portfolio._name_db)
-# Portfolio.add(ticker)
-# print(Portfolio.name(ticker))
-
-# if Portfolio._client_exists(ticker):
-#     print(f'Ticker is quoted: {ticker}')
-
-# else:
-#     print(f'Ticker is not quoted: {ticker}')
-
-# import sys
-# try:
-#     Portfolio._client.get_ticker_metadata('XXXXX')
-# except RestClientError:
-#     print('got a rest client error')  # THIS WORKS!!!!!!!!!!!!!
-#     print('  type: ', sys.exc_info()[0])
-#     print('  value: ', sys.exc_info()[1])
-#     print('  traceback: ', sys.exc_info()[2])
-# except:
-#     print('got an unknown error: ')
-#     print('  type: ', sys.exc_info()[0])
-#     print('  value: ', sys.exc_info()[1])
-#     print('  traceback: ', sys.exc_info()[2])
-
-
-
-# try:
-#     Portfolio._client.get_ticker_metadata('XXXXX')
-# except:
-#     raise
-# continue:
-
-import time
-start = time.time()
-for t in range(0, 999):
-    price = Portfolio.close(ticker, '2020-12-31')
-
-print(price)
-print(1000 * (time.time() - start), 'us elapsed')
