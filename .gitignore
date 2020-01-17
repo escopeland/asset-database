@@ -3,3 +3,5 @@
 data
 pandas
 test.py
+__pycache__
+pandas_load_test.py
