@@ -1,259 +1,351 @@
 # securities.py
 
-'''
---------------------------------------------------------------------------------
-Class Securities
- 
-This class manages a database of asset information assembled using tiingo-python
-(https://github.com/hydrosquall/tiingo-python)
-
-Initialiation reads the database files in t
-    path, file
-
-The asset information API returns as follows:
-    _client.list_tickers() returns a list of OrderedDict objects.
-        To instead work with the list of OrderedDict objects, first sort it:
-            from operator import itemgetter
-            db.sort(key=itemgetter('ticker'))
-
-        Then, to search the sorted list:
-            from bisect import bisect_left
-            key_index = bisect_left(list(db.keys())), search_key)
-            found_dict = db[db.keys()[key_index]]
-
-        I later need to determine which approach is faster.
-'''
 import os
-import pickle as pk
+import pickle
 import pandas as pd
 import datetime as dt
 
-from collections import OrderedDict
-from constants import DATE_MAX, DATE_MIN
 from tiingo import TiingoClient
 from tiingo.restclient import RestClientError
 
 TIINGO_API_KEY = 'TIINGO_API_KEY'
 DATA_PATH = '.\\data\\pkl'
-NAME_DB = '_name_db'
+NAME_DB = '_local_db'
+
+
+def strpdate(date, fmt='%Y-%m-%d'):
+    return dt.datetime.strptime(date, fmt).date()
+
+
+def incrdate(date, offset=1, fmt='%Y-%m-%d'):
+    return (strpdate(date) + dt.timedelta(offset)).strftime(fmt)
+
+
+def todaydate(fmt='%Y-%m-%d'):
+    return dt.datetime.now().date().strftime(fmt)
+
+
+def filedate(path, filename='', fmt='%Y-%m-%d'):
+    return (
+        dt.datetime.fromtimestamp(os.path.getmtime(os.path.join(path, filename)))
+        .date()
+        .strftime(fmt)
+    )
+
+
+def filestale(path, filename=''):
+    return todaydate() > filedate(path, filename)
+
+
+def db_read(path, filename):
+    with open(os.path.join(path, filename), 'rb') as f:
+        return pickle.load(f)
+
+
+def db_write(path, filename, db):
+    with open(os.path.join(path, filename), 'wb') as f:
+        pickle.dump(db, f)
 
 
 class Securities:
-    ''' Initialize data structures from locally stored databases and update them via the
-        asset data API if they are out of date.
+    ''' Manages access to a locally stored database of asset information.
+        
+        Add securities to the local database using the add method, which either: 
+            (1) retrieves data from tiingo (https://www.tiingo.com) REST API using the 
+                tiingo-python PyPI package; or, 
+            (2) uses a user-supplied ticker name, in which case the ticker metadata and
+                quotes must be added with the named metadata and quote methods.
 
-        Arguments:
-        key: The asset data API key. If not passed, it is set equal to
-            environment variable 'TIINGO_API_KEY'.
+        The metadata attribute methods return the value requested if available or None
+        if not, along with a status message of either 'OK' or 'Ticker Error' if the 
+        ticker is not in the local database. In the metadata methods that accept the 
+        'let' parameter below, the parameter acts like an attribute set.
 
-        path: The location of the asset databases.
+        The quote attribute methods return the value requested and an 'as of' date if
+        available or None and the passed date if not, along with a status message of 
+        either 'OK' 'Ticker Error' if the ticker is not in the local database. The 'let'
+        paramater acts like an attribute set, returning 'Overwrite Error' status for
+        any ticker quoted by tiingo; that is, 'let' only operates on manually created
+        tickers.
+        
+        metadata attribute methods:
+            ticker(ticker)
+            name(ticker, let=None)
+            description(ticker, let=None)
+            asset_class(ticker, let=None)
+            asset_type(ticker, let=None)
+            exchange(ticker, let=None)
+            currency(ticker, let=None)
+            start(ticker)
+            end(ticker)
+
+        quote attribute methods
+            close(ticker, date, let=None)
+            open(ticker, date, let=None)
+            high(ticker, date)
+            low(ticker, date)
+            adj_close(ticker, date)
+            adj_open(ticker, date)
+            adj_high(ticker, date)
+            adj_low(ticker, date)
+            volume(ticker, date, let=None)
+            dividend(ticker, date, let=None)
+            split(ticker, date, let=None)
+
+        other methods
+            delete(ticker)
+            add(ticker)
     '''
 
-    ########################################################################################
     def __init__(self, key=None, path=None):
-        '''Initialize data structures from locally stored databases; update each database
-        via the asset data API if it is out of date.
+        ''' Initialize data structures from locally stored databases; update each 
+            database via the Tiingo REST API if it is out of date.
 
-        Arguments:
-        key: The asset data API key. If not passed, it is set equal to
-            environment variable 'TIINGO_API_KEY'.
+            args
+                key(str=None): The Tiingp API key, equal by default to environment 
+                    variable 'TIINGO_API_KEY'.
 
-        path: The location of the asset databases.
+                path(str='.\\data\\pkl\\'): The location of the local database. 
         '''
-        self._key = os.getenv('TIINGO_API_KEY') if key is None else key
-        self._path = DATA_PATH if path is None else path
+        self._key = self._key_init(key)
+        self._path = self._path_init(path)
 
         self._client = self._client_init(self._key)
 
-        self._name_db = self._name_db_init(self._path, NAME_DB)
-        self._quote_db = self._quote_db_init(self._path)
+        self._tiingo_db = self._tiingo_db_init(self._path, NAME_DB)
+        self._local_db = self._local_db_init(self._path)
 
-    def ticker(self, ticker):
-        return self._get_metadata(ticker, 'ticker')
+    def __repr__(self):
+        return f'{self.__class__.__name__}(' f'key={self._key!r}, path={self._path!r})'
 
-    def name(self, ticker):
-        return self._get_metadata(ticker, 'name')
+    def _str__(self):
+        return f'class Securites pointing to data in {self._path!r}'
 
-    def start(self, ticker):
-        return self._get_metadata(ticker, 'startDate')
+    def _key_init(self, key):
+        return key if key is not None else os.getenv(TIINGO_API_KEY)
 
-    def end(self, ticker):
-        return self._get_metadata(ticker, 'endDate')
+    def _path_init(self, path):
+        if (path := DATA_PATH if path is None else path) == DATA_PATH:
+            if not os.path.exists(path):
+                os.mkdir(path)
+        return path
 
-    def close(self, ticker, date):
-        return self._quote_db[ticker]['quotes']['close'].asof(
-            pd.to_datetime(date, utc=True)
-        )
-
-    # Methods
-    def delete(self, ticker):
-        if ticker in self._quote_db:
-            os.remove(os.path.join(self._path, ticker))
-            del self._quote_db[ticker]
-
-    def add(self, ticker):
-        if ticker in self._quote_db:
-            print(f'Ticker {ticker} already loaded: skipping add')
-
-        elif ticker not in self._name_db:
-            print(f'Ticker {ticker} not loaded and not available: manual add')
-
-        else:  # ticker in self._name_db:
-            print(f'Ticker {ticker} not loaded but available: adding...')
-            t = {}
-            t = self._name_db[ticker]
-            q = pd.DataFrame()
-            q = self._client_get_quotes(
-                ticker, start_date=t['startDate'], end_date=t['endDate']
-            )
-            m = {}
-            m = self._client_get_metadata(ticker)
-            db = {}
-            db = {'metadata': m, 'quotes': q}
-
-            db['metadata']['assetType'] = t['assetType']
-            db['metadata']['priceCurrency'] = t['priceCurrency']
-
-            self._db_write(self._path, ticker, db)
-            self._quote_db.update({ticker: db})
-
-    # Client API access consolidatd here so that it's easier to control format parameters
-    # throughout this class.
     def _client_init(self, key):
-        config = {}
-        config['session'] = True
-        config['api_key'] = key
-        return TiingoClient(config)
+        self._key = os.getenv('TIINGO_API_KEY') if key is None else key
+        return TiingoClient(dict([('session', True), ('api_key', self._key)]))
 
-    def _client_get_supported(self):
-        return self._client.list_tickers()
+    def _tiingo_db_init(self, path, filename):
+        if (
+            True
+            if not os.path.exists(os.path.join(path, filename))
+            else filestale(path, filename)
+        ):
+            db = {}
+            [db.update({d['ticker']: d}) for d in self._client.list_tickers()]
+            db_write(path, filename, db)
 
-    def _client_get_metadata(self, ticker):
-        return self._client.get_ticker_metadata(ticker)
+        return db_read(path, filename)
 
-    def _client_get_quotes(self, ticker, start_date=None, end_date=None):
-        start_date = (
-            self._name_db['ticker']['startDate'] if start_date is None else start_date
-        )
-        end_date = self._name_db['ticker']['end_date'] if end_date is None else end_date
-        return self._client.get_dataframe(
-            ticker, startDate=start_date, endDate=end_date, frequency='daily'
-        )
-
-    # _name_db holds the list of supported tickers provided by the API.
-    def _name_db_init(self, path, filename):
-        if self._db_stale(path, filename):
-            self._name_db_update(path, filename)
-        return self._db_read(path, filename)
-
-    def _name_db_update(self, path, filename):
-        ''' Recast the list of supported tickers as OrderedDict objects returned by the 
-            quote API  an 
-            OrderedDict of the original OrderedDict objects, using the  tickers in the
-            listed OrderedDict objects as keys. Save the result as a pickle file.
-        '''
-        db = OrderedDict()
-        [db.update({d['ticker']: d}) for d in self._client_get_supported()]
-        self._db_write(path, filename, db)
-
-    # _quote_db holds a ticker's metadata and price quotes
-    def _quote_db_init(self, path):
-        tickers = [f for f in os.listdir(path) if f != NAME_DB]
+    def _local_db_init(self, path):
+        quote_db = {}
         [
-            self._quote_db_update(path, f)
-            for f in tickers
-            if self._db_stale(path, f) and f in self._name_db
+            quote_db.update({f: self._ticker_db_init(path, f)})
+            for f in os.listdir(path)
+            if f != NAME_DB
         ]
 
-        db = OrderedDict()
-        [db.update({f: self._db_read(path, f)}) for f in tickers]
+        return quote_db
 
-        return db
+    def _ticker_db_init(self, path, ticker):
+        ticker_db = db_read(path, ticker)
 
-    def _quote_db_update(self, path, filename):
-        ''' Update and re-write the ticker quote databases if they're out of 
-            date. Quotes are read from the quote API as a pandas dataframe.
-        '''
-        if (end_date := self._name_db[filename]['endDate']) is None:
-            # do nothing if the supported tickers database indicates that the API does not
-            # provide ticker price quotes.
-            pass
-
-        elif self._file_date(path, filename) < self.strpdate(end_date):
-            # update ticker price quotes and 'endDate' via the API.
-            db = OrderedDict()
-            db = self._db_read(path, filename)
-
-            db['quotes'] = pd.concat(
+        if (
+            ticker in self._tiingo_db
+            and self._tiingo_db[ticker]['endDate'] is not None
+            and filestale(path, ticker)
+        ):
+            ticker_db['quotes'] = pd.concat(
                 [
-                    db['quotes'],
-                    self._client_get_quotes(
-                        filename,
-                        start_date=self.incrdate(db['metadata']['endDate']),
-                        end_date=self._today_date(fmt='str'),
+                    ticker_db['quotes'],
+                    self._client.get_dataframe(
+                        ticker,
+                        startDate=incrdate(ticker_db['metadata']['endDate']),
+                        endDate=self._tiingo_db[ticker]['endDate'],
+                        frequency='daily',
                     ),
                 ]
             )
-            db['metadata']['endDate'] = end_date
+            ticker_db['metadata']['endDate'] = self._tiingo_db[ticker]['endDate']
+            db_write(path, ticker, ticker_db)
 
-            self._db_write(path, filename, db)
+        return ticker_db
 
-    # General Utilities
-    def _get_metadata(self, ticker, field):
+    def _metadata_update(self, ticker, field, value):
+        if ticker not in self._local_db:
+            return (None, 'Ticker Error')
+
+        metadata_db = self._local_db[ticker]['metadata']
+        if value is not None:
+            metadata_db[field] = value
+            db_write(self._path, ticker, self._local_db[ticker])
+
         try:
-            return self._quote_db[ticker]['metadata'][field]
+            return (metadata_db[field], 'OK')
 
-        except ValueError:
-            print(
-                self.__class__, f"({ticker}): Ticker does not exist in database.",
+        except KeyError:
+            return (None, 'OK')
+
+    def _quote_update(self, ticker, field, date, value, last=False):
+        if ticker not in self._local_db:
+            return (None, 'Ticker Error')
+
+        date_dt = pd.to_datetime(date, utc=True)
+        quote_db = self._local_db[ticker]['quotes']
+
+        if value is not None:
+            if ticker in self._tiingo_db:
+                if (
+                    self._tiingo_db['ticker']['startDate'] is None
+                    and self._tiingo_db['ticker']['endDate'] is None
+                ):
+                    return (None, "Overwrite Error", date)
+
+            if date_dt in quote_db.index:
+                quote_db.at[date_dt, field] = value
+
+            else:
+                quote_db = quote_db.append(
+                    pd.DataFrame({'date': [date_dt], 'close': [value],}).set_index(
+                        'date'
+                    ),
+                    sort='False',
+                ).sort()
+
+                metadata_db = self._local_db[ticker]['metadata']
+                metadata_db['startDate'] = min(metadata_db['startDate'], date)
+                metadata_db['endDate'] = max(metadata_db['endDate'], date)
+
+            db_write(self._path, ticker, self._local_db[ticker])
+
+        try:
+            if isinstance(last, bool) and last == False:
+                date_asof = quote_db.index.asof(date_dt)
+
+            else:
+                df = quote_db[quote_db.index <= date_dt]
+                date_asof = df[df[field] != last].last('1d').index[0]
+
+                # date_asof = quote_db[quote_db[field] != last].last('1d').index[0]
+
+            return (quote_db.at[date_asof, field], date_asof.strftime('%Y-%m-%d'), 'OK')
+
+        except:
+            return (None, date, 'OK')
+
+    # public metadata attribute methods
+    def ticker(self, ticker):
+        return self._metadata_update(ticker, 'ticker', None)
+
+    def name(self, ticker, let=None):
+        return self._metadata_update(ticker, 'name', let)
+
+    def description(self, ticker, let=None):
+        return self._metadata_update(ticker, 'description', let)
+
+    def asset_class(self, ticker, let=None):
+        return self._metadata_update(ticker, 'assetClass', let)
+
+    def asset_type(self, ticker, let=None):
+        return self._metadata_update(ticker, 'assetType', let)
+
+    def exchange(self, ticker, let=None):
+        return self._metadata_update(ticker, 'exchange', let)
+
+    def currency(self, ticker, let=None):
+        return self._metadata_update(ticker, 'priceCurrency', let)
+
+    def start(self, ticker):
+        return self._metadata_update(ticker, 'startDate', None)
+
+    def end(self, ticker):
+        return self._metadata_update(ticker, 'endDate', None)
+
+    # public quote attribute methods
+    def close(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'close', date, let)
+
+    def open(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'open', date, let)
+
+    def high(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'high', date, let)
+
+    def low(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'low', date, let)
+
+    def volume(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'volume', date, let)
+
+    def dividend(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'divCash', date, let, last=0)
+
+    def split(self, ticker, date, let=None):
+        return self._quote_update(ticker, 'splitFactor', date, let, last=1)
+
+    # other methods
+    def delete(self, ticker):
+        ''' Delete a security from the local database.
+
+            args
+                ticker (str): the ticker of the security to delete.
+
+            returns
+                (ticker, status): status 'OK' or 'Ticker Error'.
+        '''
+        if ticker not in self._local_db:
+            return (ticker, 'Ticker Error')
+
+        os.remove(os.path.join(self._path, ticker))
+        del self._local_db[ticker]
+        return (ticker, 'OK')
+
+    def add(self, ticker, asset_class=None):
+        ''' Add a new security to the local database.
+
+            If the security is supported by Tiingo, add all available metadata and quote data
+            available from Tiingo's REST API to the local database.
+
+            Otherwise, create the ticker but add no metadata or quote data here; use the public
+            metadata and quote data access methods for that purpose.
+
+            args
+                ticker (str): the ticker of the security to add.
+
+            returns
+                (ticker, status): status 'OK' or 'Ticker Error'.
+        '''
+        if ticker in self._local_db:
+            return (ticker, 'Ticker Error')
+
+        if ticker not in self._tiingo_db:
+            ticker_db = {ticker: {'metadata': {}, 'quotes': pd.DataFrame()}}
+
+        else:
+            meta_db = self._client.get_ticker_metadata(ticker)
+            meta_db.update(self._tiingo_db[ticker])
+            meta_db['assetClass'] = asset_class
+            meta_db.pop('exchangeCode')
+
+            quote_df = self._client.get_dataframe(
+                ticker,
+                startDate=meta_db['startDate'],
+                endDate=meta_db['endDate'],
+                frequency='daily',
             )
-            return False
 
-    #   Time-related utility methods for dealing with dataframe datetimes and dictionary
-    #   string times.
-    def _db_stale(self, path, filename=''):
-        return self._today_date() > self._file_date(path, filename)
+            ticker_db = {'metadata': meta_db, 'quotes': quote_df}
 
-    def incrdate(self, date, offset=1, fmt='%Y-%m-%d'):
-        return (self.strpdate(date) + dt.timedelta(offset)).strftime(fmt)
+        db_write(self._path, ticker, ticker_db)
+        self._local_db.update({ticker: ticker_db})
 
-    @staticmethod
-    def strpdate(date, fmt='%Y-%m-%d'):
-        return dt.datetime.strptime(date, fmt).date()
-
-    @staticmethod
-    def _today_date(fmt=None):
-        returnval = dt.datetime.now().date()
-        if fmt == 'str':
-            returnval = returnval.strftime('%Y-%m-%d')
-        return returnval
-
-    @staticmethod
-    def _file_date(path, filename='', fmt=None):
-        returnval = dt.datetime.fromtimestamp(
-            os.path.getmtime(os.path.join(path, filename))
-        ).date()
-        if fmt == 'str':
-            returnval = returnval.strftime('%Y-%m-%d')
-        return returnval
-
-    # File I/O utilities:
-    def _db_read(self, path, filename):
-        with open(os.path.join(path, filename), 'rb') as f:
-            try:
-                return pk.load(f)
-
-            except:
-                print(self.__class__, f': Bad database read ({f.name})')
-                return {}
-
-    def _db_write(self, path, filename, db):
-        with open(os.path.join(path, filename), 'wb') as f:
-            try:
-                pk.dump(db, f)
-
-            except:
-                print(self.__class__, f': Bad database write ({f.name})')
-
-
-portfolio = Securities()
+        return (ticker, 'OK')
